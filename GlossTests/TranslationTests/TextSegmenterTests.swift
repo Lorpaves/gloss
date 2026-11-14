@@ -157,11 +157,28 @@ struct TextSegmenterTests {
         #expect(segments.map(\.text) == ["Done.", "A long line that introduces the points which follow below", "• The first point"])
     }
 
-    @Test func testLineMuchShorterThanTheLongestIsNotJoined() {
-        let short = "A heading of forty-five characters, no period"
-        let long = String(repeating: "word ", count: 24) + "end."
-        let segments = TextSegmenter.segments(of: "Done.\n\(short)\n\(long)")
-        #expect(segments.map(\.text) == ["Done.", short, long])
+    @Test func testHeadingAboveAWrappedParagraphStaysSeparate() {
+        let text = """
+        Methods and materials
+        We measured the response in every sample that was collected and
+        stored it.
+        """
+        let segments = TextSegmenter.segments(of: text)
+        #expect(segments.map(\.text) == [
+            "Methods and materials",
+            "We measured the response in every sample that was collected and stored it."
+        ])
+    }
+
+    @Test func testRowsAreJoinedWhenTheSelectionStartsPartwayAlongARow() {
+        let text = """
+        見当がつかぬ。何でも薄暗
+        いじめじめした所で
+        ニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて
+        人間というものを見た。
+        """
+        let joined = text.replacingOccurrences(of: "\n", with: "")
+        #expect(TextSegmenter.segments(of: text) == [TextSegmenter.Segment(text: joined, lineBreaksBefore: 0)])
     }
 
     // MARK: - Joining

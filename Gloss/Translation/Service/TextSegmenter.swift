@@ -27,10 +27,10 @@ internal enum TextSegmenter {
     internal static let alphabeticBudget = 1000
     /// UTF-16 units per segment for other scripts (CJK, Thai, Arabic…), which take more tokens per character.
     internal static let denseBudget = 350
-    /// Shortest line, in UTF-16 units, that can have been wrapped to fit a column, for alphabetic scripts.
-    internal static let alphabeticWrapLength = 40
-    /// Shortest line that can have been wrapped to fit a column, for other scripts.
-    internal static let denseWrapLength = 16
+    /// Shortest line, in UTF-16 units, taken to fill a column of wrapped text, for alphabetic scripts.
+    internal static let alphabeticWrapLength = 45
+    /// Shortest line taken to fill a column of wrapped text, for other scripts.
+    internal static let denseWrapLength = 20
 
     // MARK: - Splitting
 
@@ -118,22 +118,26 @@ internal enum TextSegmenter {
 
     /// The paragraphs of a text, with the lines of a wrapped paragraph put back together.
     ///
-    /// A selection in a PDF comes with a line break at the end of every line of a paragraph. Translating those
-    /// lines one by one would cut sentences in the middle, so a line is joined with the next one when it stops
-    /// mid-sentence and looks wrapped (see ``isWrapped(_:onto:mayBePartial:longest:)``). Blank lines, lines that
-    /// end their sentence and short lines (headings, list items, verse) still separate paragraphs.
+    /// A selection in a PDF comes with a line break at the end of every row of a paragraph, and sometimes in the
+    /// middle of a row. Translating those lines one by one would cut sentences apart, so within a block of lines
+    /// that is wrapped prose (see ``isWrappedProse(_:)``) a line that stops mid-sentence is joined with the next
+    /// one. Blank lines and lines that end their sentence still separate paragraphs, and blocks of short lines
+    /// (list items, verse, labels) are left as they are.
     private static func paragraphs(of text: String) -> [Segment] {
         let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
-        let longest = lines.map(\.utf16.count).max() ?? 0
         let first = lines.firstIndex { !$0.isEmpty }
         var result: [Segment] = []
         var blankLines = 0
         var continuesParagraph = false
+        var isProse = false
         for (index, line) in lines.enumerated() {
             guard !line.isEmpty else {
                 blankLines += 1
                 continuesParagraph = false
                 continue
+            }
+            if index == 0 || lines[index - 1].isEmpty {
+                isProse = isWrappedProse(lines[index...].prefix { !$0.isEmpty })
             }
             if continuesParagraph, let paragraph = result.popLast() {
                 let joined = paragraph.text + glue(between: paragraph.text, and: line) + line
@@ -143,32 +147,35 @@ internal enum TextSegmenter {
             }
             blankLines = 0
             let next = index + 1 < lines.count ? lines[index + 1] : ""
-            // The first line may be the end of a row; inside a wrapped paragraph a short line is a piece of one.
-            let mayBePartial = index == first || continuesParagraph
-            continuesParagraph = isWrapped(line, onto: next, mayBePartial: mayBePartial, longest: longest)
+            continuesParagraph = continues(line, onto: next, inProse: isProse, isFirst: index == first)
         }
         return result
     }
 
-    /// Whether `line` was only wrapped onto `next`, rather than ending a paragraph.
-    ///
-    /// It was when it stops mid-sentence and fills its column. A line that may be only part of a row needs less,
-    /// a next line that fills the column or finishes the sentence: the first line of a selection (which can
-    /// begin partway along a row), and a line inside a paragraph that is already being joined (PDF viewers
-    /// sometimes break a row in two). Long list items that have no closing punctuation can't be told from
-    /// wrapped prose and are joined as well.
-    private static func isWrapped(_ line: String, onto next: String, mayBePartial: Bool, longest: Int) -> Bool {
-        guard !next.isEmpty, !endsSentence(line), !startsListItem(next) else { return false }
-        if fillsColumn(line, longest: longest) { return true }
-        return mayBePartial && (fillsColumn(next, longest: longest) || endsSentence(next))
+    /// Whether a block of consecutive lines is prose wrapped to fit a column: one of its lines, other than the
+    /// last, fills a column and stops mid-sentence.
+    private static func isWrappedProse(_ block: some Collection<String>) -> Bool {
+        block.dropLast().contains { fillsColumn($0) && !endsSentence($0) }
     }
 
-    /// Whether a line is long enough to have been wrapped: an absolute minimum for its script, and not much
-    /// shorter than the longest line of the selection.
-    private static func fillsColumn(_ line: String, longest: Int) -> Bool {
-        let length = line.utf16.count
-        let minimum = budget(for: line) == alphabeticBudget ? alphabeticWrapLength : denseWrapLength
-        return length >= minimum && Double(length) >= Double(longest) * 0.7
+    /// Whether the sentence `line` stops in goes on in `next`.
+    ///
+    /// In wrapped prose it does, except that a short line before a capitalized one is taken for a heading or a
+    /// list item. Elsewhere lines are kept apart unless the next one visibly continues the sentence: it starts
+    /// in lower case, or the selection's first line (which may be the end of a row) is followed by a line that
+    /// finishes the sentence. Lists with long items that have no closing punctuation look like wrapped prose and
+    /// are joined too.
+    private static func continues(_ line: String, onto next: String, inProse: Bool, isFirst: Bool) -> Bool {
+        guard let start = next.first, !endsSentence(line), !startsListItem(next) else { return false }
+        if inProse {
+            return fillsColumn(line) || !start.isUppercase
+        }
+        return start.isLowercase || (isFirst && endsSentence(next))
+    }
+
+    /// Whether a line is long enough to have been wrapped to fit a column.
+    private static func fillsColumn(_ line: String) -> Bool {
+        line.utf16.count >= (budget(for: line) == alphabeticBudget ? alphabeticWrapLength : denseWrapLength)
     }
 
     /// Whether a line ends with sentence-final punctuation (or a colon or semicolon), closing quotes and
