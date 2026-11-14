@@ -1,0 +1,73 @@
+name: Gloss
+options:
+  bundleIdPrefix: com.lorpaves
+  developmentLanguage: zh-Hans
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+  fileTypes:
+    # Icon Composer documents are bundles; keep each one a single resource instead of a folder of files.
+    icon:
+      file: true
+      buildPhase: resources
+packages:
+  HyMTKit:
+    path: Packages/HyMTKit
+  # Checks gloss.lorpaves.com/appcast.xml for new versions and installs them.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.10.1
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_EMIT_LOC_STRINGS: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 3529NQ8M3S
+targets:
+  Gloss:
+    type: application
+    platform: macOS
+    sources:
+      # The translation model isn't bundled: the app downloads it into Application Support (ModelManager).
+      - path: Gloss
+    dependencies:
+      - package: HyMTKit
+        product: HyMTKit
+      - package: Sparkle
+        product: Sparkle
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lorpaves.Gloss
+        GENERATE_INFOPLIST_FILE: YES
+        # Sparkle's keys (feed URL, public key), which have no INFOPLIST_KEY_ setting; Xcode merges this file with
+        # the generated keys.
+        INFOPLIST_FILE: Gloss/Resources/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Gloss
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        # Icon Composer document Gloss/Resources/AppIcon.icon (chosen design: Design/Icons/Gloss-A-Caret.icon).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Reading other apps' selections through Accessibility doesn't work inside the App Sandbox.
+        ENABLE_APP_SANDBOX: NO
+        # Required for notarization. No exceptions are needed: llama.cpp runs without JIT, and every framework in
+        # the app is signed by the same team.
+        ENABLE_HARDENED_RUNTIME: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026 Lorpaves"
+        ENABLE_PREVIEWS: YES
+    scheme:
+      testTargets:
+        - GlossTests
+  GlossTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: GlossTests
+    dependencies:
+      - target: Gloss
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lorpaves.GlossTests
+        GENERATE_INFOPLIST_FILE: YES
