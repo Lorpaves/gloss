@@ -27,6 +27,16 @@
 
 All translations run **100% locally on your Mac** using a quantized **Hy-MT2-1.8B** model via `HyMTKit`. Gloss goes online only to download the model once (about 1.14 GB) and to check for updates; there are no API keys, and the text you select never leaves your device.
 
+## Install
+
+Download the latest `Gloss-<version>.dmg` from [Releases](https://github.com/lorpaves/gloss/releases/latest), open it and drag Gloss to Applications. Or with Homebrew:
+
+```bash
+brew install --cask lorpaves/tap/gloss
+```
+
+Gloss requires macOS 15 or later. The app is signed and notarized.
+
 ## Features
 
 ### On-Device Streaming Translation

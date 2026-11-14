@@ -27,6 +27,16 @@
 
 所有翻译均通过 **Hy-MT2-1.8B** 量化模型（基于 `HyMTKit`）在 **Mac 本地 100% 离线完成**——只有首次下载模型（约 1.14 GB）和检查更新时才会联网，无需配置 API Key，你选中的文字不会离开你的设备。
 
+## 安装
+
+从 [Releases](https://github.com/lorpaves/gloss/releases/latest) 下载最新的 `Gloss-<版本>.dmg`，打开后把 Gloss 拖进「应用程序」。也可以用 Homebrew：
+
+```bash
+brew install --cask lorpaves/tap/gloss
+```
+
+Gloss 需要 macOS 15 或更高版本。App 已签名并通过 Apple 公证。
+
 ## 功能特性
 
 ### 纯本地流式翻译
