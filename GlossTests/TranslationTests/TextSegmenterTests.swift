@@ -75,6 +75,78 @@ struct TextSegmenterTests {
         #expect(TextSegmenter.halves(of: "x") == nil)
     }
 
+    // MARK: - Wrapped lines
+
+    @Test func testLinesWrappedInsideASentenceAreJoined() {
+        let text = """
+        The best software I use asks for nothing: it opens instantly,
+        keeps my words on my own machine, and still works on a train
+        with no signal.
+        """
+        let joined = "The best software I use asks for nothing: it opens instantly, keeps my words on my own machine, "
+            + "and still works on a train with no signal."
+        #expect(TextSegmenter.segments(of: text) == [TextSegmenter.Segment(text: joined, lineBreaksBefore: 0)])
+    }
+
+    @Test func testWrappedJapaneseLinesAreJoinedWithoutSpaces() {
+        let text = """
+        どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所で
+        ニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて
+        人間というものを見た。
+        """
+        let joined = text.replacingOccurrences(of: "\n", with: "")
+        #expect(TextSegmenter.segments(of: text) == [TextSegmenter.Segment(text: joined, lineBreaksBefore: 0)])
+    }
+
+    @Test func testPartialFirstLineIsJoinedWithTheLineThatFinishesItsSentence() {
+        let segments = TextSegmenter.segments(of: "and it still works\nwell on trains.")
+        #expect(segments.map(\.text) == ["and it still works well on trains."])
+    }
+
+    @Test func testWordBrokenAtAHyphenIsJoinedWithoutASpace() {
+        let segments = TextSegmenter.segments(of: "A sentence that is long enough to be wrapped ends with a well-\nknown word.")
+        #expect(segments.map(\.text) == ["A sentence that is long enough to be wrapped ends with a well-known word."])
+    }
+
+    @Test func testShortLinesWithoutPunctuationStaySeparate() {
+        let segments = TextSegmenter.segments(of: "Apples\nOranges\nBananas")
+        #expect(segments.map(\.text) == ["Apples", "Oranges", "Bananas"])
+        #expect(segments.map(\.lineBreaksBefore) == [0, 1, 1])
+    }
+
+    @Test func testWrappedParagraphsStaySeparateFromEachOther() {
+        let text = """
+        The first paragraph has a line that is long enough to be wrapped
+        and ends here.
+        The second paragraph also starts with a line long enough to wrap
+        and ends here too.
+        """
+        let segments = TextSegmenter.segments(of: text)
+        #expect(segments.map(\.text) == [
+            "The first paragraph has a line that is long enough to be wrapped and ends here.",
+            "The second paragraph also starts with a line long enough to wrap and ends here too."
+        ])
+        #expect(segments.map(\.lineBreaksBefore) == [0, 1])
+    }
+
+    @Test func testBlankLineSeparatesParagraphsEvenAfterAnUnfinishedLine() {
+        let segments = TextSegmenter.segments(of: "A long line that stops without any punctuation at its very end\n\nNext paragraph.")
+        #expect(segments.map(\.text) == ["A long line that stops without any punctuation at its very end", "Next paragraph."])
+        #expect(segments.map(\.lineBreaksBefore) == [0, 2])
+    }
+
+    @Test func testLineBeforeAListItemIsNotJoined() {
+        let segments = TextSegmenter.segments(of: "Done.\nA long line that introduces the points which follow below\n• The first point")
+        #expect(segments.map(\.text) == ["Done.", "A long line that introduces the points which follow below", "• The first point"])
+    }
+
+    @Test func testLineMuchShorterThanTheLongestIsNotJoined() {
+        let short = "A heading of forty-five characters, no period"
+        let long = String(repeating: "word ", count: 24) + "end."
+        let segments = TextSegmenter.segments(of: "Done.\n\(short)\n\(long)")
+        #expect(segments.map(\.text) == ["Done.", short, long])
+    }
+
     // MARK: - Joining
 
     @Test func testJoiningFollowsTheTargetLanguagesSpacing() {

@@ -27,25 +27,21 @@ internal enum TextSegmenter {
     internal static let alphabeticBudget = 1000
     /// UTF-16 units per segment for other scripts (CJK, Thai, Arabic…), which take more tokens per character.
     internal static let denseBudget = 350
+    /// Shortest line, in UTF-16 units, that can have been wrapped to fit a column, for alphabetic scripts.
+    internal static let alphabeticWrapLength = 40
+    /// Shortest line that can have been wrapped to fit a column, for other scripts.
+    internal static let denseWrapLength = 16
 
     // MARK: - Splitting
 
-    /// Splits text into segments: paragraphs first, then whole sentences packed up to the script's budget.
-    /// Sentences longer than the budget are cut at whitespace.
+    /// Splits text into segments: paragraphs first (see ``paragraphs(of:)``), then whole sentences packed up to
+    /// the script's budget. Sentences longer than the budget are cut at whitespace.
     internal static func segments(of text: String) -> [Segment] {
         let budget = budget(for: text)
         var result: [Segment] = []
-        var blankLines = 0
-        for line in text.components(separatedBy: .newlines) {
-            let paragraph = line.trimmingCharacters(in: .whitespaces)
-            guard !paragraph.isEmpty else {
-                blankLines += 1
-                continue
-            }
-            let breaks = result.isEmpty ? 0 : blankLines + 1
-            blankLines = 0
-            for (index, piece) in pack(sentences(of: paragraph), budget: budget).enumerated() {
-                result.append(Segment(text: piece, lineBreaksBefore: index == 0 ? breaks : 0))
+        for paragraph in paragraphs(of: text) {
+            for (index, piece) in pack(sentences(of: paragraph.text), budget: budget).enumerated() {
+                result.append(Segment(text: piece, lineBreaksBefore: index == 0 ? paragraph.lineBreaksBefore : 0))
             }
         }
         return result
@@ -119,6 +115,102 @@ internal enum TextSegmenter {
     }
 
     // MARK: - Private
+
+    /// The paragraphs of a text, with the lines of a wrapped paragraph put back together.
+    ///
+    /// A selection in a PDF comes with a line break at the end of every line of a paragraph. Translating those
+    /// lines one by one would cut sentences in the middle, so a line is joined with the next one when it stops
+    /// mid-sentence and looks wrapped (see ``isWrapped(_:onto:isFirst:longest:)``). Blank lines, lines that end
+    /// their sentence and short lines (headings, list items, verse) still separate paragraphs.
+    private static func paragraphs(of text: String) -> [Segment] {
+        let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+        let longest = lines.map(\.utf16.count).max() ?? 0
+        let first = lines.firstIndex { !$0.isEmpty }
+        var result: [Segment] = []
+        var blankLines = 0
+        var continuesParagraph = false
+        for (index, line) in lines.enumerated() {
+            guard !line.isEmpty else {
+                blankLines += 1
+                continuesParagraph = false
+                continue
+            }
+            if continuesParagraph, let paragraph = result.popLast() {
+                let joined = paragraph.text + glue(between: paragraph.text, and: line) + line
+                result.append(Segment(text: joined, lineBreaksBefore: paragraph.lineBreaksBefore))
+            } else {
+                result.append(Segment(text: line, lineBreaksBefore: result.isEmpty ? 0 : blankLines + 1))
+            }
+            blankLines = 0
+            let next = index + 1 < lines.count ? lines[index + 1] : ""
+            continuesParagraph = isWrapped(line, onto: next, isFirst: index == first, longest: longest)
+        }
+        return result
+    }
+
+    /// Whether `line` was only wrapped onto `next`, rather than ending a paragraph.
+    ///
+    /// It was when it stops mid-sentence and fills its column. The first line of a selection may be the end of a
+    /// line (the selection began partway along it), so it only needs a next line that fills the column or
+    /// finishes the sentence. Long list items that have no closing punctuation can't be told from wrapped prose
+    /// and are joined as well.
+    private static func isWrapped(_ line: String, onto next: String, isFirst: Bool, longest: Int) -> Bool {
+        guard !next.isEmpty, !endsSentence(line), !startsListItem(next) else { return false }
+        if fillsColumn(line, longest: longest) { return true }
+        return isFirst && (fillsColumn(next, longest: longest) || endsSentence(next))
+    }
+
+    /// Whether a line is long enough to have been wrapped: an absolute minimum for its script, and not much
+    /// shorter than the longest line of the selection.
+    private static func fillsColumn(_ line: String, longest: Int) -> Bool {
+        let length = line.utf16.count
+        let minimum = budget(for: line) == alphabeticBudget ? alphabeticWrapLength : denseWrapLength
+        return length >= minimum && Double(length) >= Double(longest) * 0.7
+    }
+
+    /// Whether a line ends with sentence-final punctuation (or a colon or semicolon), closing quotes and
+    /// brackets aside.
+    private static func endsSentence(_ line: String) -> Bool {
+        let closers: Set<Character> = ["\"", "'", "”", "’", ")", "]", "}", "」", "』", "】", "》", "〉", "）", "］", "｝", "»", "›"]
+        let terminators: Set<Character> = [".", "!", "?", "…", ":", ";", "。", "！", "？", "．", "｡", "：", "；", "‼", "⁇", "⁈", "⁉"]
+        guard let last = line.last(where: { !closers.contains($0) && !$0.isWhitespace }) else { return false }
+        return terminators.contains(last)
+    }
+
+    /// Whether a line begins with a bullet or a number, as a list item does.
+    private static func startsListItem(_ line: String) -> Bool {
+        let bullets: Set<Character> = ["•", "·", "‣", "◦", "▪", "■", "●", "○", "–", "—", "-", "*", "+"]
+        guard let first = line.first else { return false }
+        if bullets.contains(first) {
+            return line.dropFirst().first?.isWhitespace ?? true
+        }
+        let digits = line.prefix(while: \.isNumber)
+        guard !digits.isEmpty, digits.count <= 3, let mark = line.dropFirst(digits.count).first else { return false }
+        return mark == "." || mark == ")" || mark == "、" || mark == "．"
+    }
+
+    /// What joins two wrapped lines: nothing between characters of scripts written without spaces and after a
+    /// word broken at a hyphen, otherwise a space.
+    private static func glue(between line: String, and next: String) -> String {
+        guard let last = line.last, let first = next.first else { return "" }
+        if last == "-" || last == "‐", first.isLetter, line.dropLast().last?.isLetter == true {
+            return ""
+        }
+        return isWrittenWithoutSpaces(last) && isWrittenWithoutSpaces(first) ? "" : " "
+    }
+
+    /// Whether a character belongs to a script that puts no spaces between words (Chinese, Japanese, Thai, Lao,
+    /// Khmer, Burmese), or is punctuation of such a script.
+    private static func isWrittenWithoutSpaces(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first else { return false }
+        switch scalar.value {
+        case 0x0E00...0x0EFF, 0x1000...0x109F, 0x1780...0x17FF, 0x2E80...0x30FF, 0x31F0...0x31FF, 0x3400...0x4DBF,
+             0x4E00...0x9FFF, 0xF900...0xFAFF, 0xFF00...0xFF60, 0x20000...0x323AF:
+            return true
+        default:
+            return false
+        }
+    }
 
     /// Sentences of a paragraph, keeping every character (including the spaces between sentences).
     private static func sentences(of paragraph: String) -> [String] {
