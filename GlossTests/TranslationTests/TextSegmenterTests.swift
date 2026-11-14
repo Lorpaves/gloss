@@ -98,6 +98,23 @@ struct TextSegmenterTests {
         #expect(TextSegmenter.segments(of: text) == [TextSegmenter.Segment(text: joined, lineBreaksBefore: 0)])
     }
 
+    @Test func testRowBrokenInTwoInsideAWrappedParagraphIsJoined() {
+        // What Preview reports for three rows of a PDF: the first row comes in two pieces.
+        let text = """
+        どこで生れたかとんと見当がつかぬ。何でも薄暗
+        いじめじめした所で
+        ニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて
+        人間というものを見た。
+        """
+        let joined = text.replacingOccurrences(of: "\n", with: "")
+        #expect(TextSegmenter.segments(of: text) == [TextSegmenter.Segment(text: joined, lineBreaksBefore: 0)])
+    }
+
+    @Test func testShortLinesAfterAWrappedLineStaySeparate() {
+        let segments = TextSegmenter.segments(of: "A long line that is wrapped onto the next one because it\ncontinues here\nApples\nOranges")
+        #expect(segments.map(\.text) == ["A long line that is wrapped onto the next one because it continues here", "Apples", "Oranges"])
+    }
+
     @Test func testPartialFirstLineIsJoinedWithTheLineThatFinishesItsSentence() {
         let segments = TextSegmenter.segments(of: "and it still works\nwell on trains.")
         #expect(segments.map(\.text) == ["and it still works well on trains."])

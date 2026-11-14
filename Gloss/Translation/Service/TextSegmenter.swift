@@ -120,8 +120,8 @@ internal enum TextSegmenter {
     ///
     /// A selection in a PDF comes with a line break at the end of every line of a paragraph. Translating those
     /// lines one by one would cut sentences in the middle, so a line is joined with the next one when it stops
-    /// mid-sentence and looks wrapped (see ``isWrapped(_:onto:isFirst:longest:)``). Blank lines, lines that end
-    /// their sentence and short lines (headings, list items, verse) still separate paragraphs.
+    /// mid-sentence and looks wrapped (see ``isWrapped(_:onto:mayBePartial:longest:)``). Blank lines, lines that
+    /// end their sentence and short lines (headings, list items, verse) still separate paragraphs.
     private static func paragraphs(of text: String) -> [Segment] {
         let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
         let longest = lines.map(\.utf16.count).max() ?? 0
@@ -143,21 +143,24 @@ internal enum TextSegmenter {
             }
             blankLines = 0
             let next = index + 1 < lines.count ? lines[index + 1] : ""
-            continuesParagraph = isWrapped(line, onto: next, isFirst: index == first, longest: longest)
+            // The first line may be the end of a row; inside a wrapped paragraph a short line is a piece of one.
+            let mayBePartial = index == first || continuesParagraph
+            continuesParagraph = isWrapped(line, onto: next, mayBePartial: mayBePartial, longest: longest)
         }
         return result
     }
 
     /// Whether `line` was only wrapped onto `next`, rather than ending a paragraph.
     ///
-    /// It was when it stops mid-sentence and fills its column. The first line of a selection may be the end of a
-    /// line (the selection began partway along it), so it only needs a next line that fills the column or
-    /// finishes the sentence. Long list items that have no closing punctuation can't be told from wrapped prose
-    /// and are joined as well.
-    private static func isWrapped(_ line: String, onto next: String, isFirst: Bool, longest: Int) -> Bool {
+    /// It was when it stops mid-sentence and fills its column. A line that may be only part of a row needs less,
+    /// a next line that fills the column or finishes the sentence: the first line of a selection (which can
+    /// begin partway along a row), and a line inside a paragraph that is already being joined (PDF viewers
+    /// sometimes break a row in two). Long list items that have no closing punctuation can't be told from
+    /// wrapped prose and are joined as well.
+    private static func isWrapped(_ line: String, onto next: String, mayBePartial: Bool, longest: Int) -> Bool {
         guard !next.isEmpty, !endsSentence(line), !startsListItem(next) else { return false }
         if fillsColumn(line, longest: longest) { return true }
-        return isFirst && (fillsColumn(next, longest: longest) || endsSentence(next))
+        return mayBePartial && (fillsColumn(next, longest: longest) || endsSentence(next))
     }
 
     /// Whether a line is long enough to have been wrapped: an absolute minimum for its script, and not much
