@@ -835,7 +835,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Gloss/Resources/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Gloss;
+				INFOPLIST_KEY_CFBundleDisplayName = "Gloss Debug";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Lorpaves";
@@ -843,7 +843,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.lorpaves.Gloss;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lorpaves.Gloss.debug;
 				SDKROOT = macosx;
 			};
 			name = Debug;

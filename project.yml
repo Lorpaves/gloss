@@ -57,6 +57,14 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026 Lorpaves"
         ENABLE_PREVIEWS: YES
+      configs:
+        # The build run from Xcode is signed with a development certificate, the released one with Developer ID.
+        # macOS ties a permission (Accessibility, pasting) to one signature per bundle identifier, so under a
+        # shared identifier only one of the two could hold it. Its own identifier also gives the debug build its
+        # own preferences; the downloaded model is shared.
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.lorpaves.Gloss.debug
+          INFOPLIST_KEY_CFBundleDisplayName: Gloss Debug
     scheme:
       testTargets:
         - GlossTests
