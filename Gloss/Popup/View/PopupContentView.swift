@@ -20,8 +20,9 @@ internal struct PopupContentView: View {
     internal var settingsStore: SettingsStore
     internal var onTogglePin: () -> Void
     internal var onClose: () -> Void
-    /// Reports the content's natural size so the window can match it.
-    internal var onSizeChange: (CGSize) -> Void
+    /// Reports the content's natural size so the window can match it, along with the selection (the model's
+    /// `generation`) that size is for.
+    internal var onSizeChange: (CGSize, Int) -> Void
 
     /// Natural size of the translation, measured at the widest the popup allows.
     @State private var textSize: CGSize = .zero
@@ -48,7 +49,7 @@ internal struct PopupContentView: View {
             .onGeometryChange(for: SizeReport.self) { proxy in
                 SizeReport(size: proxy.size, generation: generation)
             } action: { report in
-                onSizeChange(report.size)
+                onSizeChange(report.size, report.generation)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onChange(of: model.generation) {

@@ -27,8 +27,9 @@ internal final class PopupWindowController {
     private let panel = PopupPanel()
     private let escapeInterceptor = EscapeKeyInterceptor()
     private var layout: PopupLayout?
-    /// Last size the content reported.
+    /// Last size the content reported, and the selection (the model's `generation`) it reported it for.
     private var contentSize: CGSize = .zero
+    private var contentGeneration = 0
     /// Set while Gloss moves the panel itself, so that only the user's drags re-anchor the layout.
     private var isPositioning = false
     /// The selection is scrolled out of view; the popup comes back when it does.
@@ -105,8 +106,14 @@ internal final class PopupWindowController {
             applyFrame(layout.frame(for: Self.placeholderSize))
             isFollowingSelection = followsSelection
         }
+        let wasPresented = isPresented
         isPresented = true
         isHiddenWhileScrolledAway = false
+        // Resizing the panel above lays the content out, which can make it report its size before the popup
+        // counts as presented. Content that then stays as it is never reports another one.
+        if !wasPresented, contentGeneration == model.generation, let layout {
+            applyFrame(layout.frame(for: contentSize))
+        }
         panel.orderFrontRegardless()
         updateEscapeInterception()
     }
@@ -183,8 +190,8 @@ internal final class PopupWindowController {
             onClose: { [weak self] in
                 self?.dismiss()
             },
-            onSizeChange: { [weak self] size in
-                self?.contentSizeDidChange(size)
+            onSizeChange: { [weak self] size, generation in
+                self?.contentSizeDidChange(size, generation: generation)
             }
         )
         let hostingView = PopupHostingView(rootView: content)
@@ -243,8 +250,9 @@ internal final class PopupWindowController {
         }
     }
 
-    private func contentSizeDidChange(_ size: CGSize) {
+    private func contentSizeDidChange(_ size: CGSize, generation: Int) {
         contentSize = size
+        contentGeneration = generation
         guard let layout, isPresented else { return }
         applyFrame(glided(layout.frame(for: size)))
     }
