@@ -53,9 +53,8 @@ struct TriggerRuleTests {
         #expect(TriggerRule.evaluate("今天天氣真好，我們一起去公園散步吧。", settings: .default) == .translate(.traditionalChinese))
     }
 
-    @Test func testVeryLongSelectionIsFlaggedAsTooLong() {
-        let long = String(repeating: "This sentence is part of a very long selection. ", count: 100)
-        #expect(long.count > TriggerRule.maximumLength)
-        #expect(TriggerRule.evaluate(long, settings: .default) == .tooLong)
+    @Test func testVeryLongSelectionIsTranslatedLikeAnyOther() {
+        let long = String(repeating: "This sentence is part of a very long selection. ", count: 1000)
+        #expect(TriggerRule.evaluate(long, settings: .default) == .translate(.english))
     }
 }

@@ -22,7 +22,6 @@ internal final class PopupViewModel {
         case translating
         case finished
         case failed
-        case tooLong
     }
 
     // MARK: - Properties
@@ -80,15 +79,6 @@ internal final class PopupViewModel {
                 self?.phase = .failed
             }
         }
-    }
-
-    /// Shows "text too long" instead of translating.
-    internal func showTooLong(_ text: String) {
-        cancel()
-        sourceText = text
-        translation = ""
-        phase = .tooLong
-        generation += 1
     }
 
     /// Stops the running translation.

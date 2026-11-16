@@ -14,14 +14,10 @@ internal enum TriggerRule {
     internal enum Decision: Equatable, Sendable {
         /// Translate from the detected language.
         case translate(HyMTLanguage)
-        /// The selection is in a language to translate but too long to translate on selection.
-        case tooLong
         /// Not a language to translate (or not prose at all).
         case ignore
     }
 
-    /// Longer selections only get a "text too long" popup.
-    internal static let maximumLength = 4000
     /// Detection only needs the beginning of long selections.
     private static let detectionPrefixLength = 1000
 
@@ -37,7 +33,8 @@ internal enum TriggerRule {
               language != settings.targetLanguage,
               !isWrittenInTargetScript(sample, detected: language, target: settings.targetLanguage)
         else { return .ignore }
-        return text.count > maximumLength ? .tooLong : .translate(language)
+        // However long: the translation streams in piece by piece, and stops when the popup is closed.
+        return .translate(language)
     }
 
     /// Whether Chinese text detected as the other script has no characters specific to it, e.g. "中文" taken for

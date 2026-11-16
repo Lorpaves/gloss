@@ -539,8 +539,6 @@ internal final class AppCoordinator {
         case .ignore:
             Self.logger.debug("Ignored \(text.count) characters: not a language to translate")
             return
-        case .tooLong:
-            popup.model.showTooLong(text)
         case .translate(let language):
             Self.logger.debug("Translating \(text.count) characters from \(language.rawValue, privacy: .public)")
             popup.model.translate(text, from: language, to: settings.targetLanguage)

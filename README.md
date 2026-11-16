@@ -42,7 +42,7 @@ Gloss requires macOS 15 or later. The app is signed and notarized.
 ### On-Device Streaming Translation
 - **100% Offline & Private** — Powered by Tencent's `Hy-MT2-1.8B-Q4_K_M.gguf` model, downloaded once and run on the Apple Silicon GPU/CPU via `HyMTKit`.
 - **Real-Time Streaming** — Translations stream token-by-token as soon as generation starts.
-- **Smart Long-Text Segmentation** — Automatically splits long selections (up to 4,000 characters) by paragraphs and sentences to fit the model's 1,024-token context window without truncation, recursively halving dense segments when needed.
+- **Smart Long-Text Segmentation** — Automatically splits long selections by paragraphs and sentences to fit the model's 1,024-token context window without truncation, recursively halving dense segments when needed.
 
 ### Reliable Selection Capture
 - **Gesture-Aware Filtering** — Recognizes intentional text selections (drag, double/triple-click, Shift-click, and from the keyboard `⌘A` or Shift with the arrow keys) while ignoring plain clicks, `⌘`/`⌃`-clicks, drag-and-drop operations, window moves/resizes, password fields, and UI controls (scroll bars, buttons, menus).

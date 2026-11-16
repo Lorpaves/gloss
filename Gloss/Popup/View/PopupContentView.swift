@@ -94,8 +94,6 @@ internal struct PopupContentView: View {
             translationText
         case .failed:
             message("翻译失败")
-        case .tooLong:
-            message("内容太长")
         }
     }
 
