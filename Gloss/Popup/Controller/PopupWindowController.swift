@@ -32,6 +32,8 @@ internal final class PopupWindowController {
     private var contentGeneration = 0
     /// Set while Gloss moves the panel itself, so that only the user's drags re-anchor the layout.
     private var isPositioning = false
+    /// How far the panel reaches beyond the popup on every side, for the popup's shadow.
+    private var shadowMargin: CGFloat = 0
     /// The selection is scrolled out of view; the popup comes back when it does.
     private var isHiddenWhileScrolledAway = false
     /// How far the popup was from its new place when the current glide started; nothing is left of it at the end.
@@ -198,12 +200,17 @@ internal final class PopupWindowController {
         hostingView.sizingOptions = []
         hostingView.translatesAutoresizingMaskIntoConstraints = false
 
-        let container: NSView
+        let surface: NSView
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.cornerRadius = 16
             glass.contentView = hostingView
-            container = glass
+            surface = glass
+            // The glass gets a shadow drawn around it instead of the window's (see ``PopupShadowView``), so the
+            // panel is larger than the popup by the room that shadow takes.
+            panel.hasShadow = false
+            panel.contentView = PopupShadowView(content: glass, cornerRadius: glass.cornerRadius)
+            shadowMargin = PopupShadowView.margin
         } else {
             let effect = NSVisualEffectView()
             effect.material = .popover
@@ -213,14 +220,14 @@ internal final class PopupWindowController {
             effect.layer?.cornerRadius = 12
             effect.layer?.masksToBounds = true
             effect.addSubview(hostingView)
-            container = effect
+            surface = effect
+            panel.contentView = effect
         }
-        panel.contentView = container
         NSLayoutConstraint.activate([
-            hostingView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hostingView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            hostingView.topAnchor.constraint(equalTo: container.topAnchor),
-            hostingView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            hostingView.leadingAnchor.constraint(equalTo: surface.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: surface.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: surface.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: surface.bottomAnchor)
         ])
     }
 
@@ -257,7 +264,14 @@ internal final class PopupWindowController {
         applyFrame(glided(layout.frame(for: size)))
     }
 
-    private func applyFrame(_ frame: CGRect) {
+    /// Where the popup is on screen: the panel without the room for its shadow.
+    private var popupFrame: CGRect {
+        panel.frame.insetBy(dx: shadowMargin, dy: shadowMargin)
+    }
+
+    /// Puts the popup at `target`, and the panel around it.
+    private func applyFrame(_ target: CGRect) {
+        let frame = target.insetBy(dx: -shadowMargin, dy: -shadowMargin)
         guard frame != panel.frame else { return }
         isPositioning = true
         if frame.size == panel.frame.size {
@@ -272,7 +286,7 @@ internal final class PopupWindowController {
     private func panelDidMove() {
         guard !isPositioning else { return }
         stopGlide()
-        layout?.move(to: panel.frame)
+        layout?.move(to: popupFrame)
         isFollowingSelection = false
     }
 
@@ -311,7 +325,7 @@ internal final class PopupWindowController {
             return
         }
         // Start from where the popup is now, measured at the edge that faces the selection.
-        let current = panel.frame
+        let current = popupFrame
         glideOffset = CGVector(
             dx: current.minX - target.minX,
             dy: layout.placement == .below ? current.maxY - target.maxY : current.minY - target.minY
