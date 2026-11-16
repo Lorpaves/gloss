@@ -8,7 +8,7 @@
 import Foundation
 import AppKit
 
-/// Watches mouse events in other apps and reports them as ``SelectionSignal``s.
+/// Watches mouse events and the keys that select text in other apps, and reports them as ``SelectionSignal``s.
 ///
 /// Global monitors never see events aimed at Gloss's own windows, so clicks in the popup don't show up here.
 @MainActor
@@ -23,6 +23,7 @@ internal final class SelectionEventMonitor {
     private let continuation: AsyncStream<SelectionSignal>.Continuation
     private var monitors: [Any] = []
     private var pendingDown: PointerDownContext?
+    private var keyboard = KeyboardSelectionTracker()
 
     // MARK: - Lifecycle
 
@@ -60,6 +61,15 @@ internal final class SelectionEventMonitor {
         }) {
             monitors.append(monitor)
         }
+        // Keys typed in other apps are only looked at to tell whether they select text; none is kept.
+        let keyMask: NSEvent.EventTypeMask = [.keyDown, .flagsChanged]
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: keyMask, handler: { [weak self] event in
+            MainActor.assumeIsolated {
+                self?.handleKey(event)
+            }
+        }) {
+            monitors.append(monitor)
+        }
     }
 
     /// Stops monitoring (e.g. after Accessibility was revoked).
@@ -69,6 +79,7 @@ internal final class SelectionEventMonitor {
         }
         monitors.removeAll()
         pendingDown = nil
+        keyboard = KeyboardSelectionTracker()
     }
 
     // MARK: - Private
@@ -105,6 +116,29 @@ internal final class SelectionEventMonitor {
         guard reportsScrolling, event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 else { return }
         // Global events have no window, so `locationInWindow` is in screen (Cocoa) coordinates.
         continuation.yield(.scroll(at: event.locationInWindow))
+    }
+
+    private func handleKey(_ event: NSEvent) {
+        let modifiers = Self.modifiers(of: event.modifierFlags)
+        let key: SelectionKey?
+        if event.type == .flagsChanged {
+            key = keyboard.modifiersChanged(to: modifiers)
+        } else {
+            // With ⌘ held, a layout without Latin letters (Russian, say) reports the Latin letter of the shortcut
+            // in `characters` and its own letter in `charactersIgnoringModifiers`.
+            let characters = [event.charactersIgnoringModifiers, event.characters]
+                .compactMap { $0 }
+                .first { $0.caseInsensitiveCompare("a") == .orderedSame } ?? event.charactersIgnoringModifiers
+            key = keyboard.keyDown(
+                keyCode: event.keyCode,
+                characters: characters,
+                modifiers: modifiers,
+                isRepeat: event.isARepeat
+            )
+        }
+        if let key {
+            continuation.yield(.keyboardSelection(key))
+        }
     }
 
     private static func sample(of event: NSEvent) -> PointerSample {

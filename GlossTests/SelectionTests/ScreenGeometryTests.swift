@@ -101,6 +101,89 @@ struct ScreenGeometryTests {
         #expect(ScreenGeometry.visiblePart(of: selection, clippedBy: []) == selection)
     }
 
+    // MARK: - Frames inside their window
+
+    @Test func testScrollAreaInsideItsWindowIsWhereItSaysItIs() {
+        let window = CGRect(x: 154, y: 31, width: 1712, height: 950)
+        let scrollArea = CGRect(x: 154, y: 163, width: 1712, height: 818)
+        #expect(ScreenGeometry.areFrames([scrollArea], insideWindowWithFrame: window))
+    }
+
+    /// A web view laid out at its full height inside a native scroll view is taller than its window.
+    @Test func testScrollAreaReachingBeyondItsWindowIsStillInIt() {
+        let window = CGRect(x: 100, y: 100, width: 900, height: 700)
+        let scrollArea = CGRect(x: 600, y: -400, width: 380, height: 3200)
+        #expect(ScreenGeometry.areFrames([scrollArea], insideWindowWithFrame: window))
+    }
+
+    /// Safari 27 with a page that was never told where its window is: the window is at (256, 205), the page's
+    /// scroll area claims to be below the bottom of the display.
+    @Test func testScrollAreaReportedOutsideItsWindowCanNotBeRight() {
+        let window = CGRect(x: 256, y: 205, width: 1643, height: 959)
+        let scrollArea = CGRect(x: 0, y: 1419, width: 1643, height: 869)
+        #expect(!ScreenGeometry.areFrames([scrollArea], insideWindowWithFrame: window))
+    }
+
+    @Test func testOneMisplacedScrollAreaIsEnoughToDistrustThemAll() {
+        let window = CGRect(x: 256, y: 205, width: 1643, height: 959)
+        let inner = CGRect(x: 0, y: 1419, width: 1643, height: 869)
+        let outer = CGRect(x: 256, y: 295, width: 1643, height: 869)
+        #expect(!ScreenGeometry.areFrames([inner, outer], insideWindowWithFrame: window))
+    }
+
+    @Test func testNothingReportedIsNothingToDistrust() {
+        #expect(ScreenGeometry.areFrames([], insideWindowWithFrame: CGRect(x: 0, y: 0, width: 800, height: 600)))
+    }
+
+    // MARK: - Misplaced web pages
+
+    /// Safari 27 with a page that was never told where its window is: the window, and the view filling it, are
+    /// at (256, 205); the toolbar covers the view's top 90 points; the page claims to start at (0, 1419).
+    @Test func testMisplacementIsTheDistanceBetweenThePageAndTheViewHoldingIt() throws {
+        let view = CGRect(x: 256, y: 205, width: 1643, height: 959)
+        let reportedScrollArea = CGRect(x: 0, y: 1419, width: 1643, height: 869)
+        let misplacement = try #require(
+            ScreenGeometry.misplacement(ofScrollAreaWithFrame: reportedScrollArea, inViewWithFrame: view)
+        )
+        #expect(misplacement == CGVector(dx: -256, dy: 1124))
+        let reportedParagraph = CGRect(x: 238, y: 1643, width: 821, height: 67)
+        #expect(
+            reportedParagraph.offsetBy(dx: -misplacement.dx, dy: -misplacement.dy)
+                == CGRect(x: 494, y: 519, width: 821, height: 67)
+        )
+    }
+
+    @Test func testPageInPlaceIsNotMisplaced() {
+        let view = CGRect(x: 256, y: 205, width: 1643, height: 959)
+        let scrollArea = CGRect(x: 256, y: 295, width: 1643, height: 869)
+        #expect(ScreenGeometry.misplacement(ofScrollAreaWithFrame: scrollArea, inViewWithFrame: view) == .zero)
+    }
+
+    @Test func testScrollAreaLargerThanTheViewIsNotHeldByIt() {
+        let view = CGRect(x: 100, y: 100, width: 400, height: 300)
+        let scrollArea = CGRect(x: 0, y: 900, width: 1200, height: 700)
+        #expect(ScreenGeometry.misplacement(ofScrollAreaWithFrame: scrollArea, inViewWithFrame: view) == nil)
+    }
+
+    // MARK: - Keyboard anchor
+
+    @Test func testKeyboardSelectionAnchorsAtThePointerOverItsWindow() {
+        let window = CGRect(x: 100, y: 100, width: 800, height: 600)
+        let anchor = ScreenGeometry.keyboardAnchor(pointer: CGPoint(x: 300, y: 400), windowFrame: window)
+        #expect(anchor == CGRect(x: 300, y: 390, width: 1, height: 20))
+    }
+
+    @Test func testKeyboardSelectionAnchorsInTheMiddleOfItsWindowWhenThePointerIsElsewhere() {
+        let window = CGRect(x: 100, y: 100, width: 800, height: 600)
+        let anchor = ScreenGeometry.keyboardAnchor(pointer: CGPoint(x: 2000, y: 50), windowFrame: window)
+        #expect(anchor == CGRect(x: 500, y: 390, width: 1, height: 20))
+    }
+
+    @Test func testKeyboardSelectionWithoutAKnownWindowAnchorsAtThePointer() {
+        let anchor = ScreenGeometry.keyboardAnchor(pointer: CGPoint(x: 300, y: 400), windowFrame: nil)
+        #expect(anchor == CGRect(x: 300, y: 390, width: 1, height: 20))
+    }
+
     // MARK: - Screen showing a rect
 
     @Test func testScreenShowingMostOfTheRectIsChosen() {

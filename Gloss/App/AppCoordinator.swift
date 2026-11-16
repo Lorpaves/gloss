@@ -336,6 +336,17 @@ internal final class AppCoordinator {
             captureTask = Task { [weak self] in
                 await self?.capture(gesture, down: down, up: up, settings: settings)
             }
+        case .keyboardSelection(let key):
+            let settings = settingsStore.settings
+            guard isCapturing, settings.isEnabled else { return }
+            guard model.acceptsSelections else {
+                Self.logger.debug("Ignored keys: the model isn't ready")
+                return
+            }
+            captureTask?.cancel()
+            captureTask = Task { [weak self] in
+                await self?.capture(key, settings: settings)
+            }
         }
     }
 
@@ -351,9 +362,23 @@ internal final class AppCoordinator {
                 return
             }
             try Task.checkCancellation()
-            show(selection, down: down, up: up, settings: settings)
+            show(selection, press: Press(down: down, up: up), settings: settings)
         } catch is CancellationError {
             // A newer press replaced this one.
+            return
+        } catch {
+            Self.logger.error("Selection capture failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func capture(_ key: SelectionKey, settings: GlossSettings) async {
+        do {
+            try await Task.sleep(for: key.settleDelay)
+            guard let selection = try await readKeyboardSelection(settings: settings) else { return }
+            try Task.checkCancellation()
+            show(selection, press: nil, settings: settings)
+        } catch is CancellationError {
+            // A newer press or key replaced this one.
             return
         } catch {
             Self.logger.error("Selection capture failed: \(error.localizedDescription, privacy: .public)")
@@ -367,10 +392,15 @@ internal final class AppCoordinator {
         settings: GlossSettings
     ) async throws -> CapturedSelection? {
         let processID: pid_t
-        let frontmostProcessID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        switch await reader.target(at: down.sample.quartzLocation, frontmostProcessID: frontmostProcessID) {
-        case .accepted(let accepted):
+        let isVerified: Bool
+        switch await reader.target(
+            at: down.sample.quartzLocation,
+            frontmostProcessID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            windowOwnerProcessID: down.windowID.flatMap(ScreenGeometry.ownerProcessID(of:))
+        ) {
+        case .accepted(let accepted, let verified):
             processID = accepted
+            isVerified = verified
         case .rejected(let reason):
             Self.logger.debug("Ignored press: \(reason, privacy: .public)")
             return nil
@@ -384,7 +414,56 @@ internal final class AppCoordinator {
             return nil
         }
 
-        let point = up.sample.quartzLocation
+        switch try await accessibilitySelection(processID: processID, near: up.sample.quartzLocation) {
+        case .selection(let selection):
+            return selection
+        case .nothing:
+            return nil
+        case .unsupported:
+            break
+        }
+        // A press the app couldn't place may not have been on text at all, so it doesn't get to copy either.
+        guard settings.usesCopyFallback, gesture.allowsCopyFallback, isVerified else {
+            Self.logger.debug("Selection not readable through Accessibility; copy fallback not used")
+            return nil
+        }
+        guard let text = try await copyFallback.copySelection(processID: processID, bundleID: bundleID) else {
+            return nil
+        }
+        Self.logger.debug("Read \(text.count) characters through the Copy menu")
+        return CapturedSelection(text: text, processID: processID, bounds: nil, source: .copy)
+    }
+
+    /// Reads what a key press selected in the app that has the keyboard focus.
+    ///
+    /// Only through Accessibility: ⌘A or Shift with the arrow keys in a list selects rows, and the Copy menu would
+    /// then copy those.
+    private func readKeyboardSelection(settings: GlossSettings) async throws -> CapturedSelection? {
+        let frontmostProcessID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let processID = await reader.focusedProcessID(frontmostProcessID: frontmostProcessID),
+              processID != ProcessInfo.processInfo.processIdentifier
+        else { return nil }
+        let bundleID = NSRunningApplication(processIdentifier: processID)?.bundleIdentifier
+        guard !settings.isExcluded(bundleID) else {
+            Self.logger.debug("Ignored keys in excluded app \(bundleID ?? "?", privacy: .public)")
+            return nil
+        }
+        switch try await accessibilitySelection(processID: processID, near: nil) {
+        case .selection(let selection):
+            return selection
+        case .nothing:
+            return nil
+        case .unsupported:
+            Self.logger.debug("Selection not readable through Accessibility; copy fallback not used for keys")
+            return nil
+        }
+    }
+
+    /// Reads an app's selection through Accessibility.
+    /// - Parameters:
+    ///   - processID: The app.
+    ///   - point: Where the press ended (Quartz coordinates); `nil` for a selection made with the keyboard.
+    private func accessibilitySelection(processID: pid_t, near point: CGPoint?) async throws -> AccessibilityRead {
         var result = try await reader.readSelection(
             processID: processID,
             near: point,
@@ -392,7 +471,7 @@ internal final class AppCoordinator {
         )
         // An app that just turned its accessibility tree on may not expose the selection, or its position, yet.
         switch result {
-        case .unsupported, .text(_, bounds: .none, clipFrames: _):
+        case .unsupported, .text(_, bounds: .none, clipFrames: _, isCorrected: _):
             if await reader.isTreeWarmingUp(for: processID) {
                 try await Task.sleep(for: Self.treeRetryDelay)
                 result = try await reader.readSelection(
@@ -406,48 +485,50 @@ internal final class AppCoordinator {
         }
 
         switch result {
-        case .text(let text, let bounds, let clipFrames):
+        case .text(let text, let bounds, let clipFrames, let isCorrected):
             Self.logger.debug("Read \(text.count) characters through Accessibility")
-            return CapturedSelection(
+            return .selection(CapturedSelection(
                 text: text,
                 processID: processID,
                 bounds: bounds,
                 clipFrames: clipFrames,
+                isPositionCorrected: isCorrected,
                 source: .accessibility
-            )
+            ))
         case .empty:
             Self.logger.debug("Nothing selected")
-            return nil
+            return .nothing
         case .apiDisabled:
             accessibilityWasRevoked()
-            return nil
+            return .nothing
         case .unsupported:
-            guard settings.usesCopyFallback, gesture.allowsCopyFallback else {
-                Self.logger.debug("Selection not readable through Accessibility; copy fallback not used")
-                return nil
-            }
-            guard let text = try await copyFallback.copySelection(processID: processID, bundleID: bundleID) else {
-                return nil
-            }
-            Self.logger.debug("Read \(text.count) characters through the Copy menu")
-            return CapturedSelection(text: text, processID: processID, bounds: nil, source: .copy)
+            return .unsupported
         }
     }
 
-    private func show(_ selection: CapturedSelection, down: PointerDownContext, up: PointerUpContext, settings: GlossSettings) {
+    /// Shows the popup for a selection.
+    /// - Parameter press: The press that made the selection; `nil` for one made with the keyboard.
+    private func show(_ selection: CapturedSelection, press: Press?, settings: GlossSettings) {
         let text = selection.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        let bounds = selection.bounds
+        var bounds = selection.bounds
             .map { ScreenGeometry.flipped($0, primaryScreenHeight: primaryHeight) }
             .flatMap { ScreenGeometry.isMeasurable($0) ? $0 : nil }
-        if let bounds {
-            let isNearPress = ScreenGeometry.isPoint(down.sample.cocoaLocation, near: bounds, within: Self.proximity)
-                || ScreenGeometry.isPoint(up.sample.cocoaLocation, near: bounds, within: Self.proximity)
-            guard isNearPress else {
-                Self.logger.debug("Ignored a selection far from the press (left over from earlier)")
-                return
+        var reportedClipFrames = selection.clipFrames
+        if let reported = bounds, let press {
+            let isNearPress = ScreenGeometry.isPoint(press.down.sample.cocoaLocation, near: reported, within: Self.proximity)
+                || ScreenGeometry.isPoint(press.up.sample.cocoaLocation, near: reported, within: Self.proximity)
+            if !isNearPress {
+                guard selection.isPositionCorrected else {
+                    Self.logger.debug("Ignored a selection far from the press (left over from earlier)")
+                    return
+                }
+                // A position Gloss had to work out may be wrong, and then this is the selection the press made.
+                Self.logger.debug("The worked-out position is far from the press; position ignored")
+                bounds = nil
+                reportedClipFrames = []
             }
         }
         if popup.isPresented, popup.model.sourceText == text {
@@ -468,17 +549,25 @@ internal final class AppCoordinator {
         // Anchor to the part of the selection that is in view; without bounds, to the span of the press (from
         // where it started to where it ended), never to the pointer alone.
         let screenFrames = NSScreen.screens.map(\.frame)
-        let clipFrames = self.clipFrames(reported: selection.clipFrames, windowID: down.windowID)
+        let windowID = press?.down.windowID
+        let windowFrame = (press?.down.windowBounds ?? ScreenGeometry.frontWindowBounds(ofProcess: selection.processID))
+            .map { ScreenGeometry.flipped($0, primaryScreenHeight: primaryHeight) }
+        let clipFrames = self.clipFrames(reported: reportedClipFrames, windowID: windowID)
         let selectionRect = bounds
             .flatMap { ScreenGeometry.visiblePart(of: $0, clippedBy: clipFrames) }
             .flatMap { ScreenGeometry.isUsableAnchor($0, screenFrames: screenFrames) ? $0 : nil }
-        let anchor = selectionRect
-            ?? ScreenGeometry.pressAnchor(from: down.sample.cocoaLocation, to: up.sample.cocoaLocation)
+        let anchor: CGRect
+        if let selectionRect {
+            anchor = selectionRect
+        } else if let press {
+            anchor = ScreenGeometry.pressAnchor(from: press.down.sample.cocoaLocation, to: press.up.sample.cocoaLocation)
+        } else {
+            anchor = ScreenGeometry.keyboardAnchor(pointer: NSEvent.mouseLocation, windowFrame: windowFrame)
+        }
         popup.present(anchor: anchor, leadingX: anchor.minX - PopupLayout.contentInset, followsSelection: true)
         if selectionRect != nil {
-            startFollowing(.accessibility(windowID: down.windowID))
+            startFollowing(.accessibility(windowID: windowID))
         } else {
-            let windowFrame = down.windowBounds.map { ScreenGeometry.flipped($0, primaryScreenHeight: primaryHeight) }
             startFollowing(.untracked(windowFrame: windowFrame))
         }
     }
@@ -628,6 +717,25 @@ internal final class AppCoordinator {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         return frames.map { ScreenGeometry.flipped($0, primaryScreenHeight: primaryHeight) }
     }
+}
+
+// MARK: - Press
+
+/// A press of the pointer, from button down to button up.
+private struct Press {
+    var down: PointerDownContext
+    var up: PointerUpContext
+}
+
+// MARK: - AccessibilityRead
+
+/// What asking an app for its selection through Accessibility came to.
+private enum AccessibilityRead {
+    case selection(CapturedSelection)
+    /// Nothing is selected, or Gloss lost its permission.
+    case nothing
+    /// The app doesn't expose its selection that way.
+    case unsupported
 }
 
 // MARK: - FollowMode

@@ -20,7 +20,9 @@ internal actor AccessibilityReader {
 
     /// Who owns the point where a press started.
     internal enum TargetResult: Sendable {
-        case accepted(processID: pid_t)
+        /// - Parameter isVerified: Whether the app told what is under the press. When it couldn't, all that is
+        ///   known is that the press was in one of its windows.
+        case accepted(processID: pid_t, isVerified: Bool)
         /// Not a selection: the reason is only logged.
         case rejected(String)
         /// Gloss lost its Accessibility permission.
@@ -30,8 +32,9 @@ internal actor AccessibilityReader {
     /// Outcome of reading an app's selection.
     internal enum ReadResult: Sendable {
         /// Selected text and, when the app reports them, its bounds and the frames of what clips it (the scroll
-        /// areas it sits in, or its window), in Quartz coordinates.
-        case text(String, bounds: CGRect?, clipFrames: [CGRect])
+        /// areas it sits in, or its window), in Quartz coordinates. `isCorrected` tells that the app reported
+        /// them somewhere else and Gloss worked out where they are.
+        case text(String, bounds: CGRect?, clipFrames: [CGRect], isCorrected: Bool)
         /// The app answered and nothing is selected, or the focus is in a password field.
         case empty
         /// The app doesn't expose its selection through Accessibility.
@@ -62,8 +65,24 @@ internal actor AccessibilityReader {
     private struct TrackedSelection {
         let element: AXUIElement
         let text: String
-        /// Every scroll area the selection sits in, or its window: what clips it when it scrolls out of view.
-        let clips: [AXUIElement]
+        /// The scroll areas the selection sits in and its window: what clips it when it scrolls out of view.
+        let surroundings: Surroundings
+    }
+
+    /// What an element sits in.
+    private struct Surroundings {
+        /// Every scroll area above the element, nearest first, each with the element that holds it.
+        var scrollAreas: [(area: AXUIElement, host: AXUIElement?)]
+        var window: AXUIElement?
+    }
+
+    /// Where a selection is on screen (Quartz coordinates).
+    private struct Location {
+        var bounds: CGRect
+        /// Frames of the scroll areas the selection sits in, or of its window when it sits in none.
+        var clipFrames: [CGRect]
+        /// How far from there the app reported all of it, when it did.
+        var correction: CGVector?
     }
 
     // MARK: - Properties
@@ -98,9 +117,9 @@ internal actor AccessibilityReader {
     /// How far up to look for the scroll areas that clip a selection; text in a web page can sit dozens of levels
     /// below its window.
     private static let maximumClipAncestors = 60
-    /// Waits before asking again what is under a press while the answer is "not implemented" (see
-    /// ``hitTest(_:)``); a web view usually answers the second time, some 20 ms later.
-    private static let hitTestRetryDelays: [Duration] = [
+    /// Waits before asking a web view again while it connects the accessibility of its page (see ``hitTest(_:)``
+    /// and ``focusedElement(of:asksAgain:)``); it usually answers the second time, some 20 ms later.
+    private static let connectionRetryDelays: [Duration] = [
         .milliseconds(30), .milliseconds(60), .milliseconds(120), .milliseconds(240)
     ]
     /// Chromium turns its full tree on after a delay and then builds it per page, so allow a few seconds.
@@ -122,36 +141,57 @@ internal actor AccessibilityReader {
     /// - Parameters:
     ///   - point: Mouse-down location (Quartz coordinates).
     ///   - frontmostProcessID: `NSWorkspace`'s frontmost app, used when the system-wide focus can't be read.
+    ///   - windowOwnerProcessID: The process whose window is under the press, as the window server sees it.
     /// - Returns: `.accepted` for presses in the focused app's content; `.rejected` for Gloss itself, the Dock,
     ///   other apps' menu bar extras and controls such as scroll bars and buttons.
-    internal func target(at point: CGPoint, frontmostProcessID: pid_t?) async -> TargetResult {
+    internal func target(
+        at point: CGPoint,
+        frontmostProcessID: pid_t?,
+        windowOwnerProcessID: pid_t?
+    ) async -> TargetResult {
         let (hit, error) = await hitTest(point)
         if error == .apiDisabled {
             return .apiDisabled
         }
+        guard let focusedPID = focusedProcessID(frontmostProcessID: frontmostProcessID) else {
+            return .rejected("no focused app")
+        }
+        guard focusedPID != ProcessInfo.processInfo.processIdentifier else {
+            return .rejected("Gloss has the focus")
+        }
         guard error == .success, let hit else {
-            return .rejected("no element at the press (AXError \(error.rawValue))")
+            // A web view that lost track of where its window is keeps answering "not implemented" for the places
+            // the user really presses (seen with Safari 27). The window server still knows whose window that is.
+            guard error == .notImplemented, windowOwnerProcessID == focusedPID else {
+                return .rejected("no element at the press (AXError \(error.rawValue))")
+            }
+            Self.logger.debug("Process \(focusedPID) can't tell what is under the press; accepted by its window")
+            return .accepted(processID: focusedPID, isVerified: false)
         }
         guard let hitPID = processID(of: hit) else {
             return .rejected("element without a process")
         }
-        // Prefer the live system-wide focus (NSWorkspace can lag behind the click that activated the app), but it
-        // fails with kAXErrorCannotComplete while some apps are in front (Chrome), so fall back to NSWorkspace.
-        guard let focusedPID = element(systemWide, kAXFocusedApplicationAttribute).flatMap({ processID(of: $0) })
-            ?? frontmostProcessID
-        else {
-            return .rejected("no focused app")
-        }
         guard hitPID == focusedPID else {
             return .rejected("press outside the focused app")
         }
-        guard hitPID != ProcessInfo.processInfo.processIdentifier else {
-            return .rejected("press in Gloss")
-        }
         if let role = string(hit, kAXRoleAttribute), Self.rejectedRoles.contains(role) {
+            // The same web view may also name an element elsewhere on its page, whose role says nothing about
+            // the press.
+            guard isInItsWindow(surroundings(of: hit)) else {
+                Self.logger.debug("Process \(hitPID) reports \(role) outside its window; accepted by its window")
+                return .accepted(processID: hitPID, isVerified: false)
+            }
             return .rejected("press on \(role)")
         }
-        return .accepted(processID: hitPID)
+        return .accepted(processID: hitPID, isVerified: true)
+    }
+
+    /// The app that has the keyboard focus.
+    /// - Parameter frontmostProcessID: `NSWorkspace`'s frontmost app, used when the system-wide focus can't be read.
+    internal func focusedProcessID(frontmostProcessID: pid_t?) -> pid_t? {
+        // Prefer the live system-wide focus (NSWorkspace can lag behind the click that activated the app), but it
+        // fails with kAXErrorCannotComplete while some apps are in front (Chrome), so fall back to NSWorkspace.
+        element(systemWide, kAXFocusedApplicationAttribute).flatMap { processID(of: $0) } ?? frontmostProcessID
     }
 
     // MARK: - Selection
@@ -160,7 +200,8 @@ internal actor AccessibilityReader {
     /// from the app's focused element.
     /// - Parameters:
     ///   - processID: The app that owns the selection.
-    ///   - point: Mouse-up location (Quartz coordinates).
+    ///   - point: Mouse-up location (Quartz coordinates); `nil` for a selection made with the keyboard, which is
+    ///     read from the focused element and a few of its ancestors.
     ///   - deadline: Stop asking a slow app after this instant.
     /// - Returns: The selection, or why there is none. "Nothing selected" only counts when the element the user
     ///   pressed says so: the focused element may be elsewhere (in Chrome it's often the address bar), so its
@@ -168,20 +209,28 @@ internal actor AccessibilityReader {
     /// - Throws: `CancellationError` when a newer press superseded this one.
     internal func readSelection(
         processID: pid_t,
-        near point: CGPoint,
+        near point: CGPoint?,
         deadline: ContinuousClock.Instant
     ) async throws -> ReadResult {
         let app = AXUIElementCreateApplication(processID)
-        var focusedValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .apiDisabled {
+        // A press has the element under the pointer to go by; keys only have the focused one, so wait for it.
+        let (focused, focusError) = await focusedElement(of: app, asksAgain: point == nil)
+        if focusError == .apiDisabled {
             return .apiDisabled
         }
-        let hit = await hitTest(point).element
         try Task.checkCancellation()
-        let pressed = hit.flatMap { self.processID(of: $0) == processID ? lineage(of: $0) : nil } ?? []
+        var pressed: [AXUIElement] = []
+        if let point {
+            let hit = await hitTest(point).element
+            try Task.checkCancellation()
+            pressed = hit.flatMap { self.processID(of: $0) == processID ? lineage(of: $0) : nil } ?? []
+        }
         var candidates = pressed.map { (element: $0, isPressed: true) }
-        if let focused = axElement(focusedValue), !pressed.contains(where: { CFEqual($0, focused) }) {
-            candidates.append((element: focused, isPressed: false))
+        if let focused, !pressed.contains(where: { CFEqual($0, focused) }) {
+            // Without a press, the focused element's ancestors stand in for the pressed ones: the selection of a
+            // web page is known to all of its elements, that of a text view to the view around its focused part.
+            let elements = point == nil ? lineage(of: focused) : [focused]
+            candidates += elements.map { (element: $0, isPressed: false) }
         }
 
         var pressedSaidEmpty = false
@@ -200,11 +249,27 @@ internal actor AccessibilityReader {
                 // Only a selection with bounds can be followed.
                 guard let bounds = selectionBounds(of: candidate.element) else {
                     trackedSelection = nil
-                    return .text(text, bounds: nil, clipFrames: [])
+                    return .text(text, bounds: nil, clipFrames: [], isCorrected: false)
                 }
-                let clips = clipElements(of: candidate.element)
-                trackedSelection = TrackedSelection(element: candidate.element, text: text, clips: clips)
-                return .text(text, bounds: bounds, clipFrames: frames(of: clips))
+                let surroundings = surroundings(of: candidate.element)
+                guard let location = locate(bounds, in: surroundings) else {
+                    // The text is right; where the app says it is can't be, and nothing tells where it is.
+                    Self.logger.debug("Process \(processID) reports its selection outside its window; position ignored")
+                    trackedSelection = nil
+                    return .text(text, bounds: nil, clipFrames: [], isCorrected: false)
+                }
+                if let correction = location.correction {
+                    Self.logger.debug(
+                        "Process \(processID) reports its selection (\(correction.dx), \(correction.dy)) from its window; moved back"
+                    )
+                }
+                trackedSelection = TrackedSelection(element: candidate.element, text: text, surroundings: surroundings)
+                return .text(
+                    text,
+                    bounds: location.bounds,
+                    clipFrames: location.clipFrames,
+                    isCorrected: location.correction != nil
+                )
             case .empty:
                 if candidate.isPressed {
                     pressedSaidEmpty = true
@@ -238,8 +303,10 @@ internal actor AccessibilityReader {
                 return .unavailable
             }
         }
-        guard let bounds = selectionBounds(of: tracked.element) else { return .unavailable }
-        return .located(bounds: bounds, clipFrames: frames(of: tracked.clips))
+        guard let bounds = selectionBounds(of: tracked.element),
+              let location = locate(bounds, in: tracked.surroundings)
+        else { return .unavailable }
+        return .located(bounds: location.bounds, clipFrames: location.clipFrames)
     }
 
     /// Forgets the tracked selection.
@@ -388,21 +455,20 @@ internal actor AccessibilityReader {
         return nil
     }
 
-    /// Every scroll area above `element`, or its window when it sits in none: whatever clips the text when it
-    /// scrolls out of view.
+    /// Every scroll area above `element` and its window: whatever clips the text when it scrolls out of view.
     ///
     /// The nearest scroll area alone isn't enough. A web view laid out at its full height inside a native scroll
     /// view (Xcode's Quick Help) has a scroll area of its own that moves with the text and never clips it; the
     /// one that does is further up.
-    private func clipElements(of element: AXUIElement) -> [AXUIElement] {
-        var scrollAreas: [AXUIElement] = []
+    private func surroundings(of element: AXUIElement) -> Surroundings {
+        var scrollAreas: [(area: AXUIElement, host: AXUIElement?)] = []
         var window: AXUIElement?
         var ancestor = self.element(element, kAXParentAttribute)
         for _ in 0..<Self.maximumClipAncestors {
             guard let current = ancestor else { break }
             let (role, parent) = roleAndParent(of: current)
             if role == kAXScrollAreaRole {
-                scrollAreas.append(current)
+                scrollAreas.append((area: current, host: parent))
             } else if role == kAXWindowRole {
                 window = current
                 break
@@ -411,10 +477,63 @@ internal actor AccessibilityReader {
             }
             ancestor = parent
         }
-        if !scrollAreas.isEmpty {
-            return scrollAreas
+        return Surroundings(scrollAreas: scrollAreas, window: window ?? self.element(element, kAXWindowAttribute))
+    }
+
+    /// Screen frames of the scroll areas in `surroundings`, leaving out those that don't report a usable one.
+    private func scrollAreaFrames(of surroundings: Surroundings) -> [(frame: CGRect, host: AXUIElement?)] {
+        surroundings.scrollAreas.compactMap { scrollArea in
+            guard let frame = frame(of: scrollArea.area), ScreenGeometry.isMeasurable(frame) else { return nil }
+            return (frame: frame, host: scrollArea.host)
         }
-        return (window ?? self.element(element, kAXWindowAttribute)).map { [$0] } ?? []
+    }
+
+    private func windowFrame(of surroundings: Surroundings) -> CGRect? {
+        surroundings.window.flatMap { frame(of: $0) }.flatMap { ScreenGeometry.isMeasurable($0) ? $0 : nil }
+    }
+
+    /// Whether the scroll areas around an element are where its window is, as far as that can be told (see
+    /// ``ScreenGeometry/areFrames(_:insideWindowWithFrame:)``).
+    private func isInItsWindow(_ surroundings: Surroundings) -> Bool {
+        guard let windowFrame = windowFrame(of: surroundings) else { return true }
+        return ScreenGeometry.areFrames(scrollAreaFrames(of: surroundings).map(\.frame), insideWindowWithFrame: windowFrame)
+    }
+
+    /// Works out where a selection is from the bounds the app reports for it.
+    ///
+    /// Usually that is where the app says. A web view whose page lost track of its window reports the page's
+    /// scroll area, and everything in it, the same distance away from where they are; the view that holds that
+    /// scroll area is reported by the app itself, in place, which gives the distance away (see
+    /// ``ScreenGeometry/misplacement(ofScrollAreaWithFrame:inViewWithFrame:)``).
+    /// - Returns: `nil` when the app's answers can't be right and can't be put right.
+    private func locate(_ bounds: CGRect, in surroundings: Surroundings) -> Location? {
+        let windowFrame = windowFrame(of: surroundings)
+        let scrollAreas = scrollAreaFrames(of: surroundings)
+        guard !scrollAreas.isEmpty else {
+            return Location(bounds: bounds, clipFrames: windowFrame.map { [$0] } ?? [], correction: nil)
+        }
+        guard let windowFrame, let misplaced = scrollAreas.last(where: { !$0.frame.intersects(windowFrame) }) else {
+            return Location(bounds: bounds, clipFrames: scrollAreas.map(\.frame), correction: nil)
+        }
+        guard let viewFrame = misplaced.host.flatMap({ frame(of: $0) }),
+              viewFrame.intersects(windowFrame),
+              let correction = ScreenGeometry.misplacement(
+                  ofScrollAreaWithFrame: misplaced.frame,
+                  inViewWithFrame: viewFrame
+              )
+        else { return nil }
+        // Scroll areas of the app itself, further up, are where they say.
+        let clipFrames = scrollAreas.map { scrollArea in
+            scrollArea.frame.intersects(windowFrame)
+                ? scrollArea.frame
+                : scrollArea.frame.offsetBy(dx: -correction.dx, dy: -correction.dy)
+        }
+        guard ScreenGeometry.areFrames(clipFrames, insideWindowWithFrame: windowFrame) else { return nil }
+        return Location(
+            bounds: bounds.offsetBy(dx: -correction.dx, dy: -correction.dy),
+            clipFrames: clipFrames,
+            correction: correction
+        )
     }
 
     /// An element's role and parent, asked for together: climbing a deep tree costs one call per level.
@@ -423,11 +542,6 @@ internal actor AccessibilityReader {
             return (string(element, kAXRoleAttribute), self.element(element, kAXParentAttribute))
         }
         return (values[0] as? String, axElement(values[1]))
-    }
-
-    /// Screen frames of `elements` (Quartz coordinates), leaving out those that don't report a usable one.
-    private func frames(of elements: [AXUIElement]) -> [CGRect] {
-        elements.compactMap { frame(of: $0) }.filter { ScreenGeometry.isMeasurable($0) }
     }
 
     /// Screen frame of an element (Quartz coordinates).
@@ -488,7 +602,7 @@ internal actor AccessibilityReader {
     /// fails with `kAXErrorNotImplemented`, and the same question a moment later is answered. Without asking again,
     /// the first selection in every newly loaded page (Xcode's Quick Help, for one) would be ignored.
     private func hitTest(_ point: CGPoint) async -> (element: AXUIElement?, error: AXError) {
-        var remainingDelays = Self.hitTestRetryDelays[...]
+        var remainingDelays = Self.connectionRetryDelays[...]
         while true {
             var hit: AXUIElement?
             let hitError = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit)
@@ -500,6 +614,33 @@ internal actor AccessibilityReader {
             } catch {
                 // A newer press replaced this one.
                 return (nil, hitError)
+            }
+        }
+    }
+
+    /// The app's focused element, or why there is none.
+    ///
+    /// As with ``hitTest(_:)``, a web view only connects the accessibility of its page when it is first asked
+    /// about it: that first time the app answers that nothing has the focus (`kAXErrorNoValue`), and names the
+    /// element a moment later. Without asking again, the first selection made with the keyboard in every newly
+    /// loaded page would be ignored.
+    /// - Parameter asksAgain: Whether to ask again while the app names no element.
+    private func focusedElement(of app: AXUIElement, asksAgain: Bool) async -> (element: AXUIElement?, error: AXError) {
+        var remainingDelays = asksAgain ? Self.connectionRetryDelays[...] : []
+        while true {
+            var value: CFTypeRef?
+            let focusError = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &value)
+            if let element = axElement(value) {
+                return (element, focusError)
+            }
+            guard focusError != .apiDisabled, let delay = remainingDelays.popFirst() else {
+                return (nil, focusError)
+            }
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                // A newer press or key replaced this one.
+                return (nil, focusError)
             }
         }
     }

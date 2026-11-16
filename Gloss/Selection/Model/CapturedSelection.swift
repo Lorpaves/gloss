@@ -22,5 +22,7 @@ internal struct CapturedSelection: Equatable, Sendable {
     internal var bounds: CGRect?
     /// Frames of the scroll areas (or the window) that clip the selection, in Quartz coordinates.
     internal var clipFrames: [CGRect] = []
+    /// The app reported the bounds and clip frames somewhere else; these are where Gloss worked out they are.
+    internal var isPositionCorrected = false
     internal var source: Source
 }

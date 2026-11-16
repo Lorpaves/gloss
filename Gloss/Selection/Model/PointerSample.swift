@@ -60,4 +60,6 @@ internal enum SelectionSignal: Sendable {
     /// The user scrolled with the pointer at this location (Cocoa coordinates), outside Gloss's windows. Only
     /// reported while ``SelectionEventMonitor/reportsScrolling``.
     case scroll(at: CGPoint)
+    /// The user selected text with the keyboard in another app.
+    case keyboardSelection(SelectionKey)
 }
