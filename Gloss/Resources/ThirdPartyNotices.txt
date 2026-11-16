@@ -1,8 +1,10 @@
 Third-Party Notices
 
-Gloss is licensed under the GNU General Public License v3.0 (see LICENSE in the source repository:
-https://github.com/lorpaves/gloss). The app includes the software below, each under its own license.
-The translation model (Tencent Hy-MT2, Apache License 2.0) is not part of the app; Gloss downloads it.
+Gloss is licensed under the GNU General Public License v3.0 (see LICENSE in
+the source repository: https://github.com/lorpaves/gloss). The app includes
+the software below, each under its own license. The translation model
+(Tencent Hy-MT2, Apache License 2.0) is not part of the app; Gloss downloads
+it.
 
 ==============================================================================
 llama.cpp (with ggml)

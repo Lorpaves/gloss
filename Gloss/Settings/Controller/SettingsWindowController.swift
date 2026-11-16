@@ -18,11 +18,13 @@ internal final class SettingsWindowController: ForegroundWindowController {
         case apps
         case permissions
         case model
+        case about
     }
 
     // MARK: - Props
 
     private let tabViewController: SettingsTabViewController
+    private let noticesWindow: ThirdPartyNoticesWindowController
 
     // MARK: - Lifecycle
 
@@ -63,7 +65,16 @@ internal final class SettingsWindowController: ForegroundWindowController {
             title: String(localized: "模型"),
             symbol: "cpu"
         )
+        let notices = ThirdPartyNoticesWindowController()
+        tabs.addPane(
+            SettingsPaneViewController(form: AboutSettingsView(info: AppInfo()) {
+                notices.present()
+            }),
+            title: String(localized: "关于"),
+            symbol: "info.circle"
+        )
         tabViewController = tabs
+        noticesWindow = notices
 
         let window = NSWindow(contentViewController: tabs)
         window.styleMask = [.titled, .closable]
